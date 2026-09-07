@@ -750,6 +750,15 @@ const allowedFiles = [
   // Dashboard credit string
   'dashboard/internal/ui/screens/pipeline.go',
   'dashboard/internal/ui/screens/progress.go',
+  'dashboard/internal/ui/screens/stats.go',
+  // Hired wall: legitimately credits the maintainer's domain in templates and JSON
+  'HIRED.md', 'funding.json', '.codex-plugin/plugin.json',
+  'hired-wall-build.mjs', 'tests/hired-wall.test.mjs',
+  // Test file citing maintainer URLs only in comments (documents what it checks)
+  'tests/project-identity.test.mjs',
+  // Extra doc file
+  '.github/plugin/plugin.json',
+  'README.tr.md'
 ];
 
 // Build pathspec for git grep — only scan tracked files matching these
