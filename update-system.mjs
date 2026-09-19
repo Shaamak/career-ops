@@ -613,6 +613,52 @@ export function localUserPaths(root = ROOT) {
   return declared;
 }
 
+export const LOCAL_OVERLAY_FILE = 'config/system-overlay.txt';
+
+export function localOverlayPaths(root = ROOT) {
+  const file = join(root, LOCAL_OVERLAY_FILE);
+  if (!existsSync(file)) return [];
+
+  const declared = parseLocalPaths(readFileSync(file, 'utf-8'));
+  const reject = (path, why) => {
+    throw new Error(`${LOCAL_OVERLAY_FILE}: refusing "${path}" — ${why}`);
+  };
+
+  for (const path of declared) {
+    if (path === LOCAL_OVERLAY_FILE || path === LOCAL_PATHS_FILE) {
+      reject(path, 'the declaration file cannot list itself or the user-layer file');
+    }
+    if (path.startsWith('/') || /^[A-Za-z]:[\\/]/.test(path) || path.startsWith('\\')) {
+      reject(path, 'paths must be repo-relative, not absolute');
+    }
+    if (path.split(/[\\/]/).includes('..')) {
+      reject(path, 'paths must stay inside the repo');
+    }
+    if (path.includes('\\')) {
+      reject(path, 'paths use forward slashes, matching how git reports them');
+    }
+    const segments = (path.endsWith('/') ? path.slice(0, -1) : path).split('/');
+    if (segments.includes('')) {
+      reject(path, 'paths must not contain an empty segment (a repeated separator)');
+    }
+    if (segments.includes('.')) {
+      reject(path, 'paths must be written plainly, with no "." segment');
+    }
+    const collision = SYSTEM_PATHS.find((sys) =>
+      sys.endsWith('/') ? path.startsWith(sys) : path === sys,
+    );
+    if (!collision) {
+      reject(
+        path,
+        `it is not a system layer file. `
+        + 'The system overlay mechanism is only for system files.',
+      );
+    }
+  }
+  return declared;
+}
+
+
 /**
  * USER_PATHS plus whatever the local declaration file adds. This is what the
  * safety check compares against — the built-in list alone would report a
@@ -1156,6 +1202,30 @@ export function systemTreeDiffers(systemPaths, upstreamRef = 'FETCH_HEAD', ctx =
  * @param {{git?: Function}} [ctx] - injectable git runner, for tests.
  * @returns {string[]} repo-relative file paths, sorted.
  */
+export function getUpdateBaseline(upstreamRef = 'FETCH_HEAD', ctx = {}) {
+  const runGit = ctx.git || git;
+  let baseline = null;
+  try {
+    const updaterCommit = runGit(
+      'log', '-1', '--format=%H', '--grep=^chore: auto-update system files', 'HEAD',
+    ).trim();
+    if (updaterCommit) {
+      runGit('merge-base', '--is-ancestor', updaterCommit, 'HEAD');
+      baseline = updaterCommit;
+    }
+  } catch {
+    baseline = null;
+  }
+  if (!baseline) {
+    try {
+      baseline = runGit('merge-base', 'HEAD', upstreamRef) || null;
+    } catch {
+      baseline = null;
+    }
+  }
+  return baseline || 'HEAD';
+}
+
 export function locallyModifiedSystemFiles(paths, upstreamRef = 'FETCH_HEAD', ctx = {}) {
   const runGit = ctx.git || git;
   if (!paths || paths.length === 0) return [];
@@ -1188,29 +1258,7 @@ export function locallyModifiedSystemFiles(paths, upstreamRef = 'FETCH_HEAD', ct
     }
   };
 
-  // An updater commit is the installed system snapshot. On a later update,
-  // using the original merge-base would mistake the previous update's files
-  // for user edits. Keep the merge-base fallback for installations without a
-  // recorded updater commit.
-  let baseline = null;
-  try {
-    const updaterCommit = runGit(
-      'log', '-1', '--format=%H', '--grep=^chore: auto-update system files', 'HEAD',
-    ).trim();
-    if (updaterCommit) {
-      runGit('merge-base', '--is-ancestor', updaterCommit, 'HEAD');
-      baseline = updaterCommit;
-    }
-  } catch {
-    baseline = null;
-  }
-  if (!baseline) {
-    try {
-      baseline = runGit('merge-base', 'HEAD', upstreamRef) || null;
-    } catch {
-      baseline = null;
-    }
-  }
+  const baseline = getUpdateBaseline(upstreamRef, ctx);
 
   const changedLocally = new Set(diffNames(baseline || 'HEAD'));
   const differsFromUpstream = new Set(diffNames(upstreamRef));
@@ -2220,6 +2268,10 @@ async function apply() {
     // so; `--force` overwrites. Either way a .bak of the local content is
     // written first, so the fix is recoverable even from the forced path.
     const preservedPaths = [];
+    const overlaysToMerge = [];
+    const overlayPaths = localOverlayPaths();
+    const baseline = getUpdateBaseline('FETCH_HEAD');
+    
     const atRisk = locallyModifiedSystemFiles(updatePaths, 'FETCH_HEAD');
     if (atRisk.length > 0) {
       console.log('');
@@ -2234,12 +2286,39 @@ async function apply() {
           console.log(`  ${result.file}  (local copy saved: ${result.backup})`);
         }
       }
+      
+      const kept = [];
+      for (const file of atRisk) {
+        const isOverlay = overlayPaths.some((op) => op.endsWith('/') ? file.startsWith(op) : op === file);
+        if (isOverlay) {
+          overlaysToMerge.push(file);
+        } else {
+          kept.push(file);
+        }
+      }
+
       if (updateForce) {
         console.log('--force: overwriting them with the upstream version.');
+        overlaysToMerge.length = 0; 
       } else {
-        preservedPaths.push(...atRisk);
-        console.log('Keeping your versions. They will NOT receive upstream changes.');
-        console.log('Re-run with `node update-system.mjs apply --force --confirm` to take the upstream version instead.');
+        preservedPaths.push(...kept);
+        if (overlaysToMerge.length > 0) {
+          console.log(`\nReapplying local changes for ${overlaysToMerge.length} overlay file(s)...`);
+          for (const file of overlaysToMerge) {
+            try {
+              const baseContent = git('show', `${baseline}:${file}`);
+              writeFileSync(join(ROOT, `${file}.base`), baseContent);
+              generatedBackupPaths.add(`${file}.base`);
+            } catch {
+              writeFileSync(join(ROOT, `${file}.base`), '');
+              generatedBackupPaths.add(`${file}.base`);
+            }
+          }
+        }
+        if (kept.length > 0) {
+          console.log('Keeping your versions. They will NOT receive upstream changes.');
+          console.log('Re-run with `node update-system.mjs apply --force --confirm` to take the upstream version instead.');
+        }
       }
       console.log('');
     }
@@ -2284,6 +2363,25 @@ async function apply() {
     }
     if (skippedPaths.length > 0) {
       console.log(`Skipped ${skippedPaths.length} path(s) absent upstream: ${skippedPaths.join(', ')}`);
+    }
+
+    if (overlaysToMerge.length > 0) {
+      const conflicts = [];
+      for (const file of overlaysToMerge) {
+        try {
+          gitQuiet('merge-file', '-L', 'Upstream', '-L', 'Base', '-L', 'Local (Overlay)', file, `${file}.base`, `${file}.bak`);
+          console.log(`Merged overlay: ${file}`);
+        } catch {
+          conflicts.push(file);
+          console.log(`Conflict merging overlay: ${file} (markers inserted)`);
+        }
+        try { unlinkSync(join(ROOT, `${file}.base`)); } catch { /* ignore */ }
+      }
+      if (conflicts.length > 0) {
+        console.log(`\nWARNING: ${conflicts.length} overlay file(s) had merge conflicts!`);
+        console.log(`Please resolve the conflicts in these files before continuing:`);
+        for (const file of conflicts) console.log(`  - ${file}`);
+      }
     }
 
     // All tracked system files need the same stale-file treatment. In
