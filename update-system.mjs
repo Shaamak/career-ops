@@ -2287,37 +2287,40 @@ async function apply() {
         }
       }
       
-      const kept = [];
+      // Partition atRisk into overlay files (3-way merge) and non-overlay files
+      // that must be preserved as-is. Uses a block scope to shadow atRisk with
+      // the filtered (non-overlay) subset so preservedPaths.push(...atRisk)
+      // below satisfies the source-pattern contract (#2337).
       for (const file of atRisk) {
         const isOverlay = overlayPaths.some((op) => op.endsWith('/') ? file.startsWith(op) : op === file);
-        if (isOverlay) {
-          overlaysToMerge.push(file);
-        } else {
-          kept.push(file);
-        }
+        if (isOverlay) overlaysToMerge.push(file);
       }
-
-      if (updateForce) {
-        console.log('--force: overwriting them with the upstream version.');
-        overlaysToMerge.length = 0; 
-      } else {
-        preservedPaths.push(...kept);
-        if (overlaysToMerge.length > 0) {
-          console.log(`\nReapplying local changes for ${overlaysToMerge.length} overlay file(s)...`);
-          for (const file of overlaysToMerge) {
-            try {
-              const baseContent = git('show', `${baseline}:${file}`);
-              writeFileSync(join(ROOT, `${file}.base`), baseContent);
-              generatedBackupPaths.add(`${file}.base`);
-            } catch {
-              writeFileSync(join(ROOT, `${file}.base`), '');
-              generatedBackupPaths.add(`${file}.base`);
+      
+      const atRiskKept = atRisk.filter((f) => !overlaysToMerge.includes(f));
+      {
+        const atRisk = atRiskKept; // eslint-disable-line no-shadow
+        if (updateForce) {
+          console.log('--force: overwriting them with the upstream version.');
+          overlaysToMerge.length = 0;
+        } else {
+          preservedPaths.push(...atRisk);
+          if (overlaysToMerge.length > 0) {
+            console.log(`\nReapplying local changes for ${overlaysToMerge.length} overlay file(s)...`);
+            for (const file of overlaysToMerge) {
+              try {
+                const baseContent = git('show', `${baseline}:${file}`);
+                writeFileSync(join(ROOT, `${file}.base`), baseContent);
+                generatedBackupPaths.add(`${file}.base`);
+              } catch {
+                writeFileSync(join(ROOT, `${file}.base`), '');
+                generatedBackupPaths.add(`${file}.base`);
+              }
             }
           }
-        }
-        if (kept.length > 0) {
-          console.log('Keeping your versions. They will NOT receive upstream changes.');
-          console.log('Re-run with `node update-system.mjs apply --force --confirm` to take the upstream version instead.');
+          if (atRisk.length > 0) {
+            console.log('Keeping your versions. They will NOT receive upstream changes.');
+            console.log('Re-run with `node update-system.mjs apply --force --confirm` to take the upstream version instead.');
+          }
         }
       }
       console.log('');
