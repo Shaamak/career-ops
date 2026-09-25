@@ -81,7 +81,7 @@ Three declarations are refused, loudly, naming the entry:
 
 ### System File Overlays
 
-If you need to make durable, local customizations to a **system-layer file** (like modifying a dashboard script, provider wiring, or the updater itself), doing so directly would cause your changes to be skipped and eventually warned about as a conflict, requiring you to manually re-apply them. 
+Direct edits to a system-layer file keep the whole local file as-is and skip upstream changes for it entirely (the default behavior for un-declared local system edits). If you need to make durable local customizations that automatically merge with upstream updates (like modifying a dashboard script, provider wiring, or the updater itself), doing so without an overlay requires you to manually re-apply upstream changes.
 
 `config/system-overlay.txt` provides an explicit allowlist for these system files.
 
@@ -96,7 +96,7 @@ When a system file is listed in `config/system-overlay.txt`, the updater changes
 2. It checks out the new upstream version.
 3. It performs a 3-way merge (`git merge-file`) to reapply your local customizations on top of the new upstream content.
 
-If the merge is clean, your edits survive transparently. If there is a conflict, the file is saved with standard git conflict markers (and a `.bak` backup) and you will receive an actionable warning to resolve the conflict by hand.
+If the merge is clean, your edits survive transparently. If there is a conflict, the update stops and reports the conflict so you can resolve the standard git conflict markers (and a `.bak` backup is preserved).
 
 **Guidance**: 
 - Use the **User Layer files** (like `modes/_custom.md` or `config/profile.yml`) for user-specific data or house rules.

@@ -2200,11 +2200,22 @@ async function apply() {
         if (bootstrapAtRisk.length > 0) {
           console.log('');
           console.log(`${bootstrapAtRisk.length} self-bootstrap file(s) differ from upstream because THIS install changed them:`);
+          const overlayPaths = localOverlayPaths();
+          const baseline = getUpdateBaseline('FETCH_HEAD');
           for (const result of backupSystemFiles(bootstrapAtRisk)) {
             if (result.error) {
               console.log(`  ${result.file}  (could not write ${result.backup}: ${result.error})`);
             } else {
               console.log(`  ${result.file}  (local copy saved: ${result.backup})`);
+              const isOverlay = overlayPaths.some((op) => op.endsWith('/') ? result.file.startsWith(op) : op === result.file);
+              if (isOverlay) {
+                try {
+                  const baseContent = git('show', `${baseline}:${result.file}`);
+                  writeFileSync(join(ROOT, `${result.file}.base`), baseContent);
+                } catch {
+                  writeFileSync(join(ROOT, `${result.file}.base`), '');
+                }
+              }
             }
           }
           console.log('Self-bootstrap must load the upstream versions; the local versions remain in the backups above.');
@@ -2273,11 +2284,13 @@ async function apply() {
     const baseline = getUpdateBaseline('FETCH_HEAD');
     
     const atRisk = locallyModifiedSystemFiles(updatePaths, 'FETCH_HEAD');
+    const failedBackups = new Set();
     if (atRisk.length > 0) {
       console.log('');
       console.log(`${atRisk.length} system file(s) differ from upstream because THIS install changed them:`);
       for (const result of backupSystemFiles(atRisk)) {
         if (result.error) {
+          failedBackups.add(result.file);
           // A .bak we could not write is worth saying out loud, but it must not
           // abort the update — the file itself is still listed either way.
           console.log(`  ${result.file}  (could not write ${result.backup}: ${result.error})`);
@@ -2286,27 +2299,50 @@ async function apply() {
           console.log(`  ${result.file}  (local copy saved: ${result.backup})`);
         }
       }
-      
-      // Partition atRisk into overlay files (3-way merge) and non-overlay files
-      // that must be preserved as-is. Uses a block scope to shadow atRisk with
-      // the filtered (non-overlay) subset so preservedPaths.push(...atRisk)
-      // below satisfies the source-pattern contract (#2337).
-      for (const file of atRisk) {
-        const isOverlay = overlayPaths.some((op) => op.endsWith('/') ? file.startsWith(op) : op === file);
-        if (isOverlay) overlaysToMerge.push(file);
+    }
+
+    // Partition atRisk and self-bootstrap overlays into overlay files (3-way merge)
+    // and non-overlay files that must be preserved as-is.
+    const candidates = new Set(atRisk);
+    for (const op of overlayPaths) {
+      const checkCandidate = (file) => {
+        if (existsSync(join(ROOT, `${file}.bak`)) && existsSync(join(ROOT, `${file}.base`))) {
+          candidates.add(file);
+        }
+      };
+      if (op.endsWith('/')) {
+        try {
+          const filesInRoot = git('ls-files', op).split('\n').filter(Boolean);
+          for (const f of filesInRoot) checkCandidate(f);
+        } catch { /* ignore */ }
+      } else {
+        checkCandidate(op);
       }
-      
-      const atRiskKept = atRisk.filter((f) => !overlaysToMerge.includes(f));
-      {
-        const atRisk = atRiskKept; // eslint-disable-line no-shadow
-        if (updateForce) {
-          console.log('--force: overwriting them with the upstream version.');
-          overlaysToMerge.length = 0;
+    }
+
+    for (const file of candidates) {
+      const isOverlay = overlayPaths.some((op) => op.endsWith('/') ? file.startsWith(op) : op === file);
+      if (isOverlay) {
+        if (failedBackups.has(file)) {
+          // Do not merge an overlay whose backup failed: skip it and keep the local file.
         } else {
-          preservedPaths.push(...atRisk);
-          if (overlaysToMerge.length > 0) {
-            console.log(`\nReapplying local changes for ${overlaysToMerge.length} overlay file(s)...`);
-            for (const file of overlaysToMerge) {
+          overlaysToMerge.push(file);
+        }
+      }
+    }
+
+    const atRiskKept = atRisk.filter((f) => !overlaysToMerge.includes(f));
+    {
+      const atRisk = atRiskKept; // eslint-disable-line no-shadow
+      if (updateForce) {
+        console.log('--force: overwriting them with the upstream version.');
+        overlaysToMerge.length = 0;
+      } else {
+        preservedPaths.push(...atRisk);
+        if (overlaysToMerge.length > 0) {
+          console.log(`\nReapplying local changes for ${overlaysToMerge.length} overlay file(s)...`);
+          for (const file of overlaysToMerge) {
+            if (!existsSync(join(ROOT, `${file}.base`))) {
               try {
                 const baseContent = git('show', `${baseline}:${file}`);
                 writeFileSync(join(ROOT, `${file}.base`), baseContent);
@@ -2317,14 +2353,17 @@ async function apply() {
               }
             }
           }
-          if (atRisk.length > 0) {
-            console.log('Keeping your versions. They will NOT receive upstream changes.');
-            console.log('Re-run with `node update-system.mjs apply --force --confirm` to take the upstream version instead.');
-          }
+        }
+        if (atRisk.length > 0) {
+          console.log('Keeping your versions. They will NOT receive upstream changes.');
+          console.log('Re-run with `node update-system.mjs apply --force --confirm` to take the upstream version instead.');
         }
       }
+    }
+    if (atRisk.length > 0 || overlaysToMerge.length > 0) {
       console.log('');
     }
+
     // Excluding by pathspec keeps the index and the working tree in agreement:
     // checking out and restoring afterwards would leave the index holding the
     // upstream blob, so the scoped commit below would record the very content
@@ -2384,6 +2423,7 @@ async function apply() {
         console.log(`\nWARNING: ${conflicts.length} overlay file(s) had merge conflicts!`);
         console.log(`Please resolve the conflicts in these files before continuing:`);
         for (const file of conflicts) console.log(`  - ${file}`);
+        throw new Error(`Overlay merge conflict in ${conflicts.length} file(s): ${conflicts.join(', ')}`);
       }
     }
 
