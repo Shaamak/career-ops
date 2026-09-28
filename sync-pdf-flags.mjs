@@ -94,6 +94,7 @@ if (flags.prune) {
   // The workspace root is needed to resolve the workspace-relative pdf paths
   // stored in the manifest (e.g. "output/042-acme-cv.pdf").
   const workspaceRoot = resolveWorkspaceRoot(APPS_FILE);
+  const outputDir = resolve(workspaceRoot, 'output');
 
   const inputLines = rawContent.split('\n');
   const keptLines = [];
@@ -116,12 +117,12 @@ if (flags.prune) {
     }
 
     const absPath = resolve(workspaceRoot, relPdf);
-    if (!pathIsInsideCanonical(absPath, workspaceRoot)) {
+    if (!pathIsInsideCanonical(absPath, outputDir)) {
       prunedRows.push({ line, relPdf, report: parts[0]?.trim() || '' });
       if (!flags.json) {
         const marker = flags.write ? '🗑️ ' : '🔎';
         const action = flags.write ? 'pruned' : 'would prune';
-        console.log(`${marker} ${action}: ${relPdf} (report ${parts[0]?.trim() || '?'}) — outside workspace`);
+        console.log(`${marker} ${action}: ${relPdf} (report ${parts[0]?.trim() || '?'}) — outside output directory`);
       }
       continue;
     }

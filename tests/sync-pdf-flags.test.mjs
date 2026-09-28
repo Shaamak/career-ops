@@ -397,16 +397,18 @@ try {
     const outputDir = join(work, 'output');
     mkdirSync(outputDir, { recursive: true });
 
-    // The files exist, but one is outside the workspace.
+    // Both files exist on disk, but both are outside the output/ directory.
     writeFileSync(join(outputDir, '1-acme-cv.pdf'), 'pdf-content');
     const externalPdf = join(outOfBounds, 'outside.pdf');
     writeFileSync(externalPdf, 'pdf-content');
+    const escapedInRepoPdf = join(work, 'escaped-in-repo.pdf');
+    writeFileSync(escapedInRepoPdf, 'pdf-content');
 
     const manifest = [
       '# report\tpdf\thtml\tformat\tdate',
       '1\toutput/1-acme-cv.pdf\toutput/1-acme.html\ta4\t2026-01-01',
       `2\t${externalPdf.replace(/\\/g, '/')}\toutput/2-gone.html\ta4\t2026-01-02`,
-      '3\toutput/../../outside.pdf\toutput/3-gone.html\ta4\t2026-01-02',
+      '3\toutput/../escaped-in-repo.pdf\toutput/3-gone.html\ta4\t2026-01-02',
       '',
     ].join('\n');
 
@@ -423,12 +425,12 @@ try {
     const json = (() => { try { return JSON.parse(result.stdout); } catch { return null; } })();
 
     if (result.status === 0 && json && json.pruned === 2 && json.kept === 1) {
-      pass('sync-pdf-flags --prune prunes paths outside the workspace');
+      pass('sync-pdf-flags --prune prunes paths outside output directory even when files exist');
     } else {
       fail(`path traversal JSON wrong: status=${result.status}, stdout=${result.stdout.trim()}`);
     }
 
-    if (!manifestAfter.includes('outside.pdf') && manifestAfter.includes('1-acme-cv.pdf')) {
+    if (!manifestAfter.includes('outside.pdf') && !manifestAfter.includes('escaped-in-repo.pdf') && manifestAfter.includes('1-acme-cv.pdf')) {
       pass('sync-pdf-flags --prune removes out-of-bounds files from manifest');
     } else {
       fail(`path traversal manifest content wrong:\n${manifestAfter}`);
