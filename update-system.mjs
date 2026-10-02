@@ -21,7 +21,7 @@
  */
 
 import { execFile, execFileSync, execSync } from 'child_process';
-import { copyFileSync, readFileSync, writeFileSync, existsSync, unlinkSync, rmSync, lstatSync, mkdtempSync, realpathSync } from 'fs';
+import { copyFileSync, readFileSync, writeFileSync, existsSync, unlinkSync, renameSync, rmSync, lstatSync, mkdtempSync, realpathSync } from 'fs';
 import { join, dirname, basename, resolve, posix as pathPosix } from 'path';
 import { tmpdir } from 'os';
 import { randomBytes, timingSafeEqual } from 'crypto';
@@ -2303,10 +2303,25 @@ async function apply() {
 
     // Partition atRisk and self-bootstrap overlays into overlay files (3-way merge)
     // and non-overlay files that must be preserved as-is.
+    //
+    // checkCandidate accepts two signals that this file needs 3-way merging:
+    //   a) The standard in-flight case: .bak (local copy) + .base (upstream anchor)
+    //      exist from the current run's backupSystemFiles() — the file was in atRisk
+    //      and both artifacts were just written.
+    //   b) The cross-run persistence case: .overlay-base exists from a *previous*
+    //      clean-merge run. After a clean merge the merged result is committed as the
+    //      new auto-update baseline, so locallyModifiedSystemFiles() sees no diff on
+    //      the next run and the file never enters atRisk again — meaning the overlay
+    //      would be silently overwritten. Keeping .overlay-base on disk is the signal
+    //      that this path is declared in system-overlay.txt and must continue to be
+    //      3-way merged even when the working tree looks clean.
     const candidates = new Set(atRisk);
     for (const op of overlayPaths) {
       const checkCandidate = (file) => {
-        if (existsSync(join(ROOT, `${file}.bak`)) && existsSync(join(ROOT, `${file}.base`))) {
+        if (
+          (existsSync(join(ROOT, `${file}.bak`)) && existsSync(join(ROOT, `${file}.base`))) ||
+          existsSync(join(ROOT, `${file}.overlay-base`))
+        ) {
           candidates.add(file);
         }
       };
@@ -2336,6 +2351,13 @@ async function apply() {
       const atRisk = atRiskKept; // eslint-disable-line no-shadow
       if (updateForce) {
         console.log('--force: overwriting them with the upstream version.');
+        // Clean up any pending overlay-recovery artifacts so a prior conflict's
+        // .bak / .base / .overlay-base files don't confuse the next run.
+        for (const file of overlaysToMerge) {
+          for (const ext of ['.bak', '.base', '.overlay-base']) {
+            try { unlinkSync(join(ROOT, `${file}${ext}`)); } catch { /* ignore */ }
+          }
+        }
         overlaysToMerge.length = 0;
       } else {
         preservedPaths.push(...atRisk);
@@ -2425,7 +2447,18 @@ async function apply() {
         } else {
           // Clean merge: .bak is now redundant — the merged content is in the
           // file itself, and .bak was already added to generatedBackupPaths above.
-          try { unlinkSync(join(ROOT, `${file}.base`)); } catch { /* ignore */ }
+          //
+          // Rename .base → .overlay-base instead of deleting it. The renamed file
+          // is the upstream anchor for the NEXT update: locallyModifiedSystemFiles()
+          // will see no diff from the post-merge baseline (the merged result IS the
+          // new baseline after the auto-update commit), so this file would never
+          // re-enter atRisk — and checkCandidate()'s .overlay-base probe is the
+          // only thing that keeps it in the 3-way merge path on subsequent runs.
+          try {
+            const basePath = join(ROOT, `${file}.base`);
+            const overlayBasePath = join(ROOT, `${file}.overlay-base`);
+            renameSync(basePath, overlayBasePath);
+          } catch { /* ignore */ }
         }
       }
       if (conflicts.length > 0) {

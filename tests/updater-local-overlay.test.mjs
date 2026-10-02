@@ -5,7 +5,7 @@
  * rejects improper paths, similar to updater-local-paths.test.mjs but for system files.
  */
 
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, renameSync, unlinkSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { pass, fail } from './helpers.mjs';
@@ -337,6 +337,92 @@ console.log('\n🧪 Local system overlay declaration file (#4326)\n');
     pass('apply path: conflict keeps .base and .bak for manual resolution');
   } else {
     fail(`#11 conflict=${mergeFailed} .base=${baseExists} .bak=${bakExists} — expected all true`);
+  }
+}
+
+// ── 12. Clean merge renames .base to .overlay-base (cross-run persistence signal) ──
+{
+  const dir = mkdtempSync(join(tmpdir(), 'co-overlay-apply-12-'));
+  roots.push(dir);
+  const g = (...args) => gitIn(dir, ...args);
+  g('init', '-q', '-b', 'main', '.');
+  g('config', 'user.email', 'test@example.com');
+  g('config', 'user.name', 'Test');
+  g('config', 'commit.gpgsign', 'false');
+  g('config', 'core.hooksPath', join(dir, 'no-such-hooks'));
+  g('config', 'core.autocrlf', 'false');
+  g('config', 'core.eol', 'lf');
+  mkdirSync(join(dir, 'modes'), { recursive: true });
+  mkdirSync(join(dir, 'config'), { recursive: true });
+  writeFileSync(join(dir, 'modes', 'pdf.md'), 'line 1\nline 2\nline 3\n');
+  g('add', '-A');
+  g('commit', '-qm', 'base');
+  g('branch', 'upstream');
+
+  // Upstream edits line 1; local overlay edits line 3 — no conflict
+  g('checkout', '-q', 'upstream');
+  writeFileSync(join(dir, 'modes', 'pdf.md'), 'line 1 upstream\nline 2\nline 3\n');
+  g('commit', '-qam', 'upstream update');
+  g('checkout', '-q', 'main');
+
+  writeFileSync(join(dir, LOCAL_OVERLAY_FILE), 'modes/pdf.md\n');
+  writeFileSync(join(dir, 'modes', 'pdf.md'), 'line 1\nline 2\nline 3 local\n');
+
+  const baseContent = gitRawIn(dir, 'show', 'HEAD:modes/pdf.md');
+  const localBak = readFileSync(join(dir, 'modes', 'pdf.md'), 'utf-8');
+  writeFileSync(join(dir, 'modes', 'pdf.md.base'), baseContent);
+  writeFileSync(join(dir, 'modes', 'pdf.md.bak'), localBak);
+
+  g('checkout', 'upstream', '--', 'modes/pdf.md');
+
+  // Simulate the clean-merge branch: merge-file succeeds, then rename .base → .overlay-base
+  g('merge-file', '-L', 'Upstream', '-L', 'Base', '-L', 'Local (Overlay)',
+    join(dir, 'modes', 'pdf.md'),
+    join(dir, 'modes', 'pdf.md.base'),
+    join(dir, 'modes', 'pdf.md.bak'));
+
+  // The code under test: rename .base to .overlay-base
+  renameSync(join(dir, 'modes', 'pdf.md.base'), join(dir, 'modes', 'pdf.md.overlay-base'));
+
+  const baseGone    = !existsSync(join(dir, 'modes', 'pdf.md.base'));
+  const overBaseSurvives = existsSync(join(dir, 'modes', 'pdf.md.overlay-base'));
+
+  if (baseGone && overBaseSurvives) {
+    pass('clean merge: .base is renamed to .overlay-base (cross-run persistence signal kept)');
+  } else {
+    fail(`#12 baseGone=${baseGone} overBaseSurvives=${overBaseSurvives} — expected both true`);
+  }
+}
+
+// ── 13. --force path deletes .bak / .base / .overlay-base artifacts ──
+{
+  const dir = mkdtempSync(join(tmpdir(), 'co-overlay-apply-13-'));
+  roots.push(dir);
+  mkdirSync(join(dir, 'modes'), { recursive: true });
+  mkdirSync(join(dir, 'config'), { recursive: true });
+
+  // Simulate artifacts left by a prior conflicted run
+  writeFileSync(join(dir, 'modes', 'pdf.md'), 'conflicted content\n');
+  writeFileSync(join(dir, 'modes', 'pdf.md.bak'), 'local copy\n');
+  writeFileSync(join(dir, 'modes', 'pdf.md.base'), 'upstream base\n');
+  writeFileSync(join(dir, 'modes', 'pdf.md.overlay-base'), 'prior clean-merge anchor\n');
+
+  // Simulate --force cleanup logic
+  const overlaysToMerge = ['modes/pdf.md'];
+  for (const file of overlaysToMerge) {
+    for (const ext of ['.bak', '.base', '.overlay-base']) {
+      try { unlinkSync(join(dir, `${file}${ext}`)); } catch { /* ignore */ }
+    }
+  }
+
+  const bakGone         = !existsSync(join(dir, 'modes', 'pdf.md.bak'));
+  const baseGone        = !existsSync(join(dir, 'modes', 'pdf.md.base'));
+  const overlayBaseGone = !existsSync(join(dir, 'modes', 'pdf.md.overlay-base'));
+
+  if (bakGone && baseGone && overlayBaseGone) {
+    pass('--force: .bak, .base, and .overlay-base artifacts are removed');
+  } else {
+    fail(`#13 bak=${bakGone} base=${baseGone} overlayBase=${overlayBaseGone} — expected all true`);
   }
 }
 

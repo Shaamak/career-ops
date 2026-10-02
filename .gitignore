@@ -110,6 +110,11 @@ reports/*-RESERVED.md
 # form, which for cv.md or portals.yml leaves a file holding the same PII as the
 # original sitting untracked in the repo root. Trailing `*` covers both.
 *.bak*
+# Overlay merge artifacts: .base is the upstream anchor written per-run; .overlay-base is
+# the persistent cross-run anchor kept after a clean merge (see update-system.mjs apply()).
+# Neither should ever be committed.
+*.base
+*.overlay-base
 
 # The tracker and its follow-ups file in the LEGACY ROOT LAYOUT. resolveTrackerPath()
 # documents its own fallback chain — CAREER_OPS_TRACKER > <root>/data/applications.md
