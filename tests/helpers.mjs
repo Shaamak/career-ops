@@ -6,6 +6,8 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync as _rmS
 import { tmpdir } from 'os';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { isNestedCheckout } from '../lib/mjs-files.mjs';
+import { localToday } from '../lib/local-today.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 export const ROOT = join(__dirname, '..');   // repo root (tests/ lives one level down)
@@ -303,6 +305,27 @@ export function runAcrossUtcDay(cmd, args = [], opts = {}) {
 }
 
 /**
+ * Like {@link runAcrossUtcDay}, for a child that dates its output with the LOCAL
+ * calendar day (lib/local-today.mjs) instead of the UTC one.
+ *
+ * Same midnight hazard, different midnight: a single capture taken before the
+ * call fails a run that crosses the child's LOCAL midnight (#3816 is the UTC
+ * version of exactly this). Reusing daysSpanned() is safe -- it is date
+ * arithmetic over two YYYY-MM-DD strings and does not care which clock produced
+ * them.
+ *
+ * @param {string} cmd - Executable to run.
+ * @param {string[]} [args] - Arguments.
+ * @param {object} [opts] - Passed through to run().
+ * @returns {{out: string|null, days: string[]}} Output, and the local day(s) the call spanned.
+ */
+export function runAcrossLocalDay(cmd, args = [], opts = {}) {
+  const before = localToday();
+  const out = run(cmd, args, opts);
+  return { out, days: daysSpanned(before, localToday()) };
+}
+
+/**
  * The last failure rendered for interpolation into a failure message, or an
  * empty string when nothing has failed, so a caller can append it
  * unconditionally without changing its message on the success path.
@@ -392,6 +415,11 @@ export function walkFiles(dir, match, skipDirs = new Set()) {
   for (const entry of entries) {
     const full = join(dir, entry.name);
     if (entry.isDirectory()) {
+      // A linked worktree carries a `.git` FILE, so a caller's `skipDirs` set —
+      // which matches by NAME — never fires on one, and the walk descends into a
+      // whole second checkout of this repository (#3499, #3762). The caller's
+      // own set stays authoritative for everything else.
+      if (isNestedCheckout(full)) continue;
       if (!skipDirs.has(entry.name)) out.push(...walkFiles(full, match, skipDirs));
     } else if (match.test(entry.name)) {
       out.push(full);
