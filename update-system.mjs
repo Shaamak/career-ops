@@ -2410,18 +2410,28 @@ async function apply() {
     if (overlaysToMerge.length > 0) {
       const conflicts = [];
       for (const file of overlaysToMerge) {
+        let hadConflict = false;
         try {
           gitQuiet('merge-file', '-L', 'Upstream', '-L', 'Base', '-L', 'Local (Overlay)', file, `${file}.base`, `${file}.bak`);
           console.log(`Merged overlay: ${file}`);
         } catch {
+          hadConflict = true;
           conflicts.push(file);
           console.log(`Conflict merging overlay: ${file} (markers inserted)`);
         }
-        try { unlinkSync(join(ROOT, `${file}.base`)); } catch { /* ignore */ }
+        if (hadConflict) {
+          // Keep .base and .bak so the user can see the three-way state that
+          // caused the conflict and resolve it manually, as documented.
+        } else {
+          // Clean merge: .bak is now redundant — the merged content is in the
+          // file itself, and .bak was already added to generatedBackupPaths above.
+          try { unlinkSync(join(ROOT, `${file}.base`)); } catch { /* ignore */ }
+        }
       }
       if (conflicts.length > 0) {
         console.log(`\nWARNING: ${conflicts.length} overlay file(s) had merge conflicts!`);
-        console.log(`Please resolve the conflicts in these files before continuing:`);
+        console.log(`Resolve the conflicts and re-run. The .base (upstream) and .bak (your local)`);
+        console.log(`files are preserved beside each conflicted file as reference.`);
         for (const file of conflicts) console.log(`  - ${file}`);
         throw new Error(`Overlay merge conflict in ${conflicts.length} file(s): ${conflicts.join(', ')}`);
       }

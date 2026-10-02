@@ -5,7 +5,7 @@
  * rejects improper paths, similar to updater-local-paths.test.mjs but for system files.
  */
 
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { pass, fail } from './helpers.mjs';
@@ -280,6 +280,63 @@ console.log('\n🧪 Local system overlay declaration file (#4326)\n');
     pass('apply path: overlay whose backup failed skips merge and is preserved');
   } else {
     fail(`#10 expected preserved overlay, got overlays=${JSON.stringify(overlaysToMerge)} preserved=${JSON.stringify(preservedPaths)}`);
+  }
+}
+
+
+// ── 11. Apply path: after overlay conflict .base and .bak are preserved ──
+{
+  const dir = mkdtempSync(join(tmpdir(), 'co-overlay-apply-11-'));
+  roots.push(dir);
+  const g = (...args) => gitIn(dir, ...args);
+  g('init', '-q', '-b', 'main', '.');
+  g('config', 'user.email', 'test@example.com');
+  g('config', 'user.name', 'Test');
+  g('config', 'commit.gpgsign', 'false');
+  g('config', 'core.hooksPath', join(dir, 'no-such-hooks'));
+  g('config', 'core.autocrlf', 'false');
+  g('config', 'core.eol', 'lf');
+  mkdirSync(join(dir, 'modes'), { recursive: true });
+  mkdirSync(join(dir, 'config'), { recursive: true });
+  writeFileSync(join(dir, 'modes', 'pdf.md'), 'line 1\nline 2\nline 3\n');
+  g('add', '-A');
+  g('commit', '-qm', 'base');
+  g('branch', 'upstream');
+
+  // Both upstream and local edit the same line to cause a conflict
+  g('checkout', '-q', 'upstream');
+  writeFileSync(join(dir, 'modes', 'pdf.md'), 'line 1\nline 2 upstream edit\nline 3\n');
+  g('commit', '-qam', 'upstream update');
+  g('checkout', '-q', 'main');
+
+  writeFileSync(join(dir, LOCAL_OVERLAY_FILE), 'modes/pdf.md\n');
+  writeFileSync(join(dir, 'modes', 'pdf.md'), 'line 1\nline 2 local edit\nline 3\n');
+
+  const baseContent = gitRawIn(dir, 'show', 'HEAD:modes/pdf.md');
+  const localBak = readFileSync(join(dir, 'modes', 'pdf.md'), 'utf-8');
+  writeFileSync(join(dir, 'modes', 'pdf.md.base'), baseContent);
+  writeFileSync(join(dir, 'modes', 'pdf.md.bak'), localBak);
+
+  g('checkout', 'upstream', '--', 'modes/pdf.md');
+
+  let mergeFailed = false;
+  try {
+    g('merge-file', '-L', 'Upstream', '-L', 'Base', '-L', 'Local (Overlay)',
+      join(dir, 'modes', 'pdf.md'),
+      join(dir, 'modes', 'pdf.md.base'),
+      join(dir, 'modes', 'pdf.md.bak'));
+  } catch {
+    mergeFailed = true;
+  }
+
+  // On conflict: .base and .bak must both still exist for manual resolution
+  const baseExists = existsSync(join(dir, 'modes', 'pdf.md.base'));
+  const bakExists  = existsSync(join(dir, 'modes', 'pdf.md.bak'));
+
+  if (mergeFailed && baseExists && bakExists) {
+    pass('apply path: conflict keeps .base and .bak for manual resolution');
+  } else {
+    fail(`#11 conflict=${mergeFailed} .base=${baseExists} .bak=${bakExists} — expected all true`);
   }
 }
 
