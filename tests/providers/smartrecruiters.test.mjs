@@ -95,6 +95,8 @@ try {
       { id: 'o1', name: 'Onsite Role', location: { city: 'Berlin', country: 'de', remote: false, hybrid: false, fullLocation: 'Berlin, , Germany' } },
       { id: 'u1', name: 'Old Shape Role', location: { fullLocation: 'Geneva, Switzerland', remote: false } },
       { id: 'u2', name: 'No Location Role' },
+      { id: 'u3', name: 'Remote Only Flag', location: { fullLocation: 'Oslo, Norway', remote: true } },
+      { id: 'u4', name: 'Hybrid Only Flag', location: { fullLocation: 'Lyon, France', hybrid: true } },
     ],
   }, 'Acme', 'acme');
   const wt = Object.fromEntries(workModel.map(j => [j.id, j.workplaceType]));
@@ -103,10 +105,13 @@ try {
   } else {
     fail(`workplaceType by id = ${JSON.stringify(wt)}`);
   }
-  if (!('workplaceType' in workModel[3]) && !('workplaceType' in workModel[4])) {
-    pass('parseSmartRecruitersResponse leaves workplaceType unset when a flag is missing');
+  // Either flag missing → unknown, even when the one present is true: a lone
+  // remote: true must not be dropped by allow: [hybrid] (review on #7894).
+  const partial = workModel.slice(3);
+  if (partial.every(j => !('workplaceType' in j))) {
+    pass('parseSmartRecruitersResponse leaves workplaceType unset unless both flags are present');
   } else {
-    fail(`old-shape rows got workplaceType ${JSON.stringify([workModel[3].workplaceType, workModel[4].workplaceType])}`);
+    fail(`partial-flag rows got workplaceType ${JSON.stringify(partial.map(j => [j.id, j.workplaceType]))}`);
   }
   if (workModel[0].location === 'Chennai, , India, Hybrid' && workModel[1].location === 'Lisbon, , Portugal, Remote'
       && workModel[2].location === 'Berlin, , Germany') {

@@ -283,9 +283,9 @@ export default {
  * - workplaceType: from the same two flags, which every posting on the boards
  *   read on 2026-11-27 carried and never set together (Freshworks, ServiceNow,
  *   Wise, Experian, Canva, BoschGroup, Sixt, Ubisoft2): `hybrid` → hybrid,
- *   `remote` → remote, both false → onsite. Omitted when either flag is
- *   missing, so an older payload stays unknown to workplace_filter instead of
- *   reading as onsite.
+ *   `remote` → remote, both false → onsite. Omitted unless both flags are
+ *   booleans, so a payload missing either one stays unknown to
+ *   workplace_filter instead of being read as one type.
  * - url: `j.ref` is an `api.smartrecruiters.com/v1/companies/<slug>/postings/<id>`
  *   URL — rewrite to the public `jobs.smartrecruiters.com/<slug>/<id>-<title-slug>`.
  *   The public site has no `/postings/` segment; carrying it over yields a 404,
@@ -318,10 +318,14 @@ export function parseSmartRecruitersResponse(json, companyName, companySlug) {
     // alone showed it as onsite, and workplace_filter saw no type at all.
     const workModel = loc.hybrid === true ? 'Hybrid' : loc.remote ? 'Remote' : '';
     const location = [fullLocation, workModel].filter(Boolean).join(', ');
-    const workplaceType = loc.hybrid === true ? 'hybrid'
-      : loc.remote === true ? 'remote'
-      : loc.remote === false && loc.hybrid === false ? 'onsite'
-      : undefined;
+    // Both flags must be booleans: a payload carrying only one says nothing
+    // about the other, so it stays unknown rather than being filtered as one
+    // type (remote: true alone would otherwise fail allow: [hybrid]).
+    const flagsKnown = typeof loc.remote === 'boolean' && typeof loc.hybrid === 'boolean';
+    const workplaceType = !flagsKnown ? undefined
+      : loc.hybrid ? 'hybrid'
+      : loc.remote ? 'remote'
+      : 'onsite';
     const slugified = (j.name || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
     let url = '';
     if (typeof j.ref === 'string') {
